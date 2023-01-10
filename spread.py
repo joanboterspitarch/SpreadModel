@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch.nn.functional as F
-
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 class Grid:
 
@@ -241,6 +241,88 @@ class Grid:
             self.update(tau=tau)
             self.S[:, :, L+1] = self.state.clone()
             self.df_spread.iloc[L+1] = [self.susceptible, self.infected, self.dead]
+    
+    def Clear_Init_State(self):
+
+        self.state = torch.zeros(
+            (self.N, self.N),
+            dtype=torch.uint8
+        )
+        self.state[self.n, self.n] = 1
+        self.cont = self.state.clone()
+        self.neigh_prob = torch.zeros(size=(self.N, self.N), dtype=torch.float64)
+        self.ind = [(self.n, self.n)]
+
+        self.susceptible = self.N**2 - 1
+        self.infected = 1
+        self.dead = 0
+
+        self.S = torch.zeros(self.N, self.N, self.K+1, dtype=torch.uint8)
+        self.S[:, :, 0] = self.state.clone()
+        self.P = torch.zeros(self.N, self.N, self.K, dtype=torch.uint8)
+
+        self.df_spread = pd.DataFrame(
+            index=range(self.K+1),
+            columns=['Susceptible', 'Infected', 'Dead']
+        )
+        self.df_spread.iloc[0] = [self.susceptible, self.infected, self.dead]
+
+    def MonteCarlo(self, n_it=10**3, tau=1):
+
+        # we create our tensors to storage the results
+
+        self.X0 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
+        self.X1 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
+        self.X2 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
+        self.P_MC = torch.zeros(self.N, self.N, self.K, dtype=torch.float64)
+        #self.df_MC = pd.DataFrame(
+        #    index=range(self.K+1),
+        #    columns=['Susceptible', 'Infected', 'Dead']
+        #)
+
+        # first iteration using seed = 0
+        self.Spread(seed=0, tau=tau)
+
+        self.X0 += (self.S==0).to(torch.float64)
+        self.X1 += (self.S==1).to(torch.float64)
+        self.X2 += (self.S==2).to(torch.float64)
+        self.P_MC += self.P
+        self.df_MC = self.df_spread.copy()
+
+        # we have to note that self.A and self.large_matrices are already computed.
+        # we only need to compute the neighbourhood relation and update the state
+        # for every single random seed
+
+        for s in range(1, n_it):
+
+            torch.random.manual_seed(s)
+            np.random.seed(s)
+
+            self.Clear_Init_State()
+
+            for L in range(self.K):
+                self.neighbourhood_relation(step=L)
+                self.P[:, :, L] = self.neigh_prob.clone()
+                self.update(tau=tau)
+                self.S[:, :, L+1] = self.state.clone()
+                self.df_spread.iloc[L+1] += [self.susceptible, self.infected, self.dead]
+            
+            self.X0 += (self.S==0).to(torch.float64)
+            self.X1 += (self.S==1).to(torch.float64)
+            self.X2 += (self.S==2).to(torch.float64)
+            self.P_MC += self.P
+            self.df_MC += self.df_spread
+        
+        self.X0 /= n_it
+        self.X1 /= n_it
+        self.X2 /= n_it
+        self.P_MC /= n_it
+        self.df_MC /= n_it
+
+
+
+
+
 
 
 
