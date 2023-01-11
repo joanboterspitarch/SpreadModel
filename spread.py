@@ -4,7 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch.nn.functional as F
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from multiprocessing import cpu_count, Pool
 
 class Grid:
 
@@ -318,19 +319,3 @@ class Grid:
         self.X2 /= n_it
         self.P_MC /= n_it
         self.df_MC /= n_it
-
-
-
-
-
-
-
-
-
-
-        
-
-        
-
-
-
