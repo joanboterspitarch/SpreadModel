@@ -7,6 +7,43 @@ import torch.nn.functional as F
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count, Pool
 
+class My_Activation(torch.nn.Module):
+
+    def __init__(self, M=100, k=1):
+        super(My_Activation, self).__init__()
+        self.max = M
+        self.k = k
+
+    def forward(self, x):
+
+        self.exp = torch.exp(-self.k*x)
+        return 1 + (self.max - 1) / (1 + self.exp)
+        
+
+class ArchNN(torch.nn.Module):
+
+    def __init__(self, M=100, k=0.001):
+
+        super(ArchNN, self).__init__()
+
+        self.fc1 = torch.nn.Linear(2, 10)
+        self.fc2 = torch.nn.Linear(10, 5)
+        self.fc3 = torch.nn.Linear(5, 1)
+        self.fc4 = torch.nn.Linear(5, 1)
+        self.sigmoid = torch.nn.Sigmoid()
+        self.relu = torch.nn.ReLU()
+        self.my_act = My_Activation(M=M, k=k)  
+
+    def forward(self, x):
+
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        x = self.relu(x)
+        x1 = self.sigmoid(self.fc3(x)) # probabilidades de infección p0
+        x2 = self.my_act(self.fc4(x)) # loss factor for further cells C
+        return x1, x2
+
 class Grid:
 
     def __init__(self, N):
@@ -18,7 +55,7 @@ class Grid:
         self.n = int(N/2)
         self.state = torch.zeros(
             (self.N, self.N),
-            dtype=torch.uint8
+            dtype=torch.float64
         )
         self.state[self.n, self.n] = 1
         self.ind = [(self.n, self.n)]
@@ -112,7 +149,7 @@ class Grid:
         )
 
     def enlargement_process(self):
-
+        
         self.large_matrices = torch.zeros(
             (7, 7, self.K),
             dtype=torch.float64
@@ -194,7 +231,11 @@ class Grid:
 
     def update(self, tau=1):
 
-        self.state[self.cont==self.inc] = 2 # infecte to dead once verified the delay
+        infected_cells = (self.state == 1)
+        # the new dead cells are infected cells which have already completed the delay
+        ind_new_dead_cells = torch.logical_and(infected_cells, self.cont == self.inc)
+
+        self.state[ind_new_dead_cells] += 1 # infected to dead once verified the delay, we use += due to backpropagation
 
         # update the state of the cells
 
@@ -202,8 +243,8 @@ class Grid:
         #    the cell becomes healthy or infected respectively.
 
         health_cells = (self.state == 0)
-        self.state[torch.logical_and(self.neigh_prob <= 0, health_cells)] = 0
-        self.state[torch.logical_and(self.neigh_prob >= 1, health_cells)] = 1
+        #self.state[torch.logical_and(self.neigh_prob <= 0, health_cells)] = 0
+        self.state[torch.logical_and(self.neigh_prob >= 1, health_cells)] += 1
 
         # 2. for every single healthy cell, whose probability of being infected is between 0 and 1
         #    healthy cell + prob between 0, 1 --> update the state of the cell
@@ -215,7 +256,7 @@ class Grid:
             (self.neigh_prob[ind_to_inf_cells], 1 - self.neigh_prob[ind_to_inf_cells]),
             dim=1
         ).log()
-        self.state[ind_to_inf_cells] = F.gumbel_softmax(logits=probs, tau=tau, hard=True)[:, 0].to(dtype=torch.uint8)
+        self.state[ind_to_inf_cells] = F.gumbel_softmax(logits=probs, tau=tau, hard=True)[:, 0].to(dtype=torch.float64)
 
         self.cont[self.state==1] += 1
         aux = torch.where(self.state==1)
@@ -229,7 +270,7 @@ class Grid:
         torch.random.manual_seed(seed)
         np.random.seed(seed)
 
-        self.S = torch.zeros(self.N, self.N, self.K+1, dtype=torch.uint8)
+        self.S = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
         self.P = torch.zeros(self.N, self.N, self.K, dtype=torch.float64)
         self.S[:, :, 0] = self.state.clone()
 
@@ -247,7 +288,7 @@ class Grid:
 
         self.state = torch.zeros(
             (self.N, self.N),
-            dtype=torch.uint8
+            dtype=torch.float64
         )
         self.state[self.n, self.n] = 1
         self.cont = self.state.clone()
@@ -258,43 +299,19 @@ class Grid:
         self.infected = 1
         self.dead = 0
 
-        self.S = torch.zeros(self.N, self.N, self.K+1, dtype=torch.uint8)
+        self.S = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
         self.S[:, :, 0] = self.state.clone()
-        self.P = torch.zeros(self.N, self.N, self.K, dtype=torch.uint8)
+        self.P = torch.zeros(self.N, self.N, self.K, dtype=torch.float64)
 
         self.df_spread = pd.DataFrame(
-            index=range(self.K+1),
+            np.zeros((self.K+1, 3), dtype='float64'),
             columns=['Susceptible', 'Infected', 'Dead']
         )
         self.df_spread.iloc[0] = [self.susceptible, self.infected, self.dead]
 
-    def MonteCarlo(self, n_it=10**3, tau=1):
+    def Task_MonteCarlo(self, n_it=10**3, tau=1):
 
-        # we create our tensors to storage the results
-
-        self.X0 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
-        self.X1 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
-        self.X2 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
-        self.P_MC = torch.zeros(self.N, self.N, self.K, dtype=torch.float64)
-        #self.df_MC = pd.DataFrame(
-        #    index=range(self.K+1),
-        #    columns=['Susceptible', 'Infected', 'Dead']
-        #)
-
-        # first iteration using seed = 0
-        self.Spread(seed=0, tau=tau)
-
-        self.X0 += (self.S==0).to(torch.float64)
-        self.X1 += (self.S==1).to(torch.float64)
-        self.X2 += (self.S==2).to(torch.float64)
-        self.P_MC += self.P
-        self.df_MC = self.df_spread.copy()
-
-        # we have to note that self.A and self.large_matrices are already computed.
-        # we only need to compute the neighbourhood relation and update the state
-        # for every single random seed
-
-        for s in range(1, n_it):
+        for s in range(n_it):
 
             torch.random.manual_seed(s)
             np.random.seed(s)
@@ -308,9 +325,24 @@ class Grid:
                 self.S[:, :, L+1] = self.state.clone()
                 self.df_spread.iloc[L+1] += [self.susceptible, self.infected, self.dead]
             
-            self.X0 += (self.S==0).to(torch.float64)
-            self.X1 += (self.S==1).to(torch.float64)
-            self.X2 += (self.S==2).to(torch.float64)
+            self.X0 += torch.where(
+                self.S==0,
+                self.S + 1,
+                0
+            ).to(torch.float64)
+
+            self.X1 += torch.where(
+                self.S==1,
+                self.S,
+                0
+            ).to(torch.float64)
+
+            self.X2 += torch.where(
+                self.S==2,
+                self.S - 1,
+                0
+            ).to(torch.float64)
+
             self.P_MC += self.P
             self.df_MC += self.df_spread
         
@@ -319,3 +351,161 @@ class Grid:
         self.X2 /= n_it
         self.P_MC /= n_it
         self.df_MC /= n_it
+
+    def MonteCarlo(self, n_it=10**3, tau=1):
+
+        # we create our tensors to storage the results
+
+        self.X0 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
+        self.X1 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
+        self.X2 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
+        self.P_MC = torch.zeros(self.N, self.N, self.K, dtype=torch.float64)
+        self.df_MC = pd.DataFrame(
+            np.zeros((self.K+1, 3), dtype='float64'),
+            columns=['Susceptible', 'Infected', 'Dead']
+        )
+
+        self.submatrix()
+        self.enlargement_process()
+
+        # we have to note that self.A and self.large_matrices are already computed.
+        # we only need to compute the neighbourhood relation and update the state
+        # for every single random seed
+
+        self.Task_MonteCarlo(n_it=n_it, tau=tau)
+    
+    def enlargement_process_AI(self):
+
+        
+        self.large_matrices = torch.zeros(
+            (7, 7, self.K)
+        ).float()
+        ind1 = (self.m == 0)
+        
+        # when rho <= part[0]
+
+        self.large_matrices[2:5, 2:5, ind1] = self.p0[ind1]
+        self.large_matrices[3, 3, ind1] = 0
+
+        # when part[0] < rho <= part[1]
+
+        ind2 = (self.m >= 1)
+        self.large_matrices[2, 3, ind2] = self.A[ind2, 0].clone()
+        self.large_matrices[2, 4, ind2] = self.A[ind2, 1].clone()
+        self.large_matrices[3, 4, ind2] = self.A[ind2, 2].clone()
+
+        # when part[1] < rho <= part[2]
+
+        ind3 = (self.m >= 2)
+
+        self.large_matrices[1, 3, ind3] = (self.A[ind3, 0].clone()/self.div[ind3])
+        self.large_matrices[1, 5, ind3] = (self.A[ind3, 1].clone()/self.div[ind3])
+        self.large_matrices[3, 5, ind3] = (self.A[ind3, 2].clone()/self.div[ind3])
+
+        self.large_matrices[1, 4, ind3] = (self.large_matrices[1, 3, ind3].clone() + self.large_matrices[1, 5, ind3].clone())/2
+        self.large_matrices[2, 5, ind3] = (self.large_matrices[1, 5, ind3].clone() + self.large_matrices[3, 5, ind3].clone())/2
+
+        # when rho > part[2]
+
+        ind4 = (self.m == 3)
+
+        self.large_matrices[0, 3, ind4] = (self.A[ind4, 0].clone()/((self.div[ind4])**2))
+        self.large_matrices[0, 6, ind4] = (self.A[ind4, 1].clone()/((self.div[ind4])**2))
+        self.large_matrices[3, 6, ind4] = (self.A[ind4, 2].clone()/((self.div[ind4])**2))
+
+        self.large_matrices[0, 4, ind4] = (self.large_matrices[1, 4, ind4].clone()/self.div[ind4])
+        self.large_matrices[2, 6, ind4] = (self.large_matrices[2, 5, ind4].clone()/self.div[ind4])
+
+        self.large_matrices[0, 5, ind4] = (self.large_matrices[0, 4, ind4].clone() + self.large_matrices[0, 6, ind4].clone())/2
+        self.large_matrices[1, 6, ind4] = (self.large_matrices[0, 6, ind4].clone() + self.large_matrices[2, 6, ind4].clone())/2
+
+        # rotate the matrices to the right position
+
+        q2 = (self.Q == 2)
+        q3 = (self.Q == 3)
+        q4 = (self.Q == 4)
+
+        self.large_matrices[:, :, q2] = torch.transpose(
+            torch.rot90(
+                self.large_matrices[:, :, q2],
+                k=1
+            ),
+            0,
+            1
+        )
+
+        self.large_matrices[:, :, q4] = torch.transpose(
+            torch.rot90(
+                self.large_matrices[:, :, q4],
+                k=-1
+            ),
+            0,
+            1
+        )
+
+        self.large_matrices[:, :, q3] = torch.rot90(
+            self.large_matrices[:, :, q3],
+            k = 2
+        )
+    
+    def AI_MonteCarlo(self, n_epochs=10, n_it=10**3, tau=1, M=100, k=0.001, target1=None, target2=None, target3=None):
+
+        self.model = ArchNN(M=M, k=k)
+
+        log_each = 2
+        l = []
+        crit = torch.nn.MSELoss()
+        opt = torch.optim.SGD(self.model.parameters(), lr=0.1)
+        self.submatrix()
+        #self.model.train()
+
+        for epoch in range(n_epochs):
+
+            print('Number of epoch: ', epoch)
+
+            self.p0, self.div = self.model(torch.stack(
+                (self.Temp, self.Hum),
+                dim=1
+            ).float())
+
+            self.p0 = self.p0.flatten().to(torch.float64)
+            self.div = self.div.flatten().to(torch.float64)
+
+            print(self.p0, self.div)
+
+            self.X0 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
+            self.X1 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
+            self.X2 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
+            self.P_MC = torch.zeros(self.N, self.N, self.K, dtype=torch.float64)
+            self.df_MC = pd.DataFrame(
+                np.zeros((self.K+1, 3), dtype='float64'),
+                columns=['Susceptible', 'Infected', 'Dead']
+            )
+
+            
+            self.enlargement_process_AI()
+
+            self.Task_MonteCarlo(n_it=n_it, tau=tau)
+
+            self.l1 = crit(self.X0[:, :, -1], target1)
+            self.l2 = crit(self.X1[:, :, -1], target2)
+            self.l3 = crit(self.X2[:, :, -1], target3)
+
+            self.l = (self.l1 + self.l2)
+
+            l.append(self.l1.item())
+
+            opt.zero_grad()
+
+            self.l1.backward()
+
+            opt.step()
+
+            if not epoch % log_each:
+
+                #lr = lr0 + (0.001-lr0)*(epoch/n_epochs)
+                print(f'Loss:  {np.mean(l):.5f}')
+                #opt = torch.optim.Adam(self.model.parameters(), lr=lr)
+
+
+
