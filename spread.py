@@ -146,13 +146,13 @@ class Grid:
                 self.Xi.cos()
             ),
             dim=1
-        )
+        ).float()
 
     def enlargement_process(self):
         
         self.large_matrices = torch.zeros(
             (7, 7, self.K),
-            dtype=torch.float64
+            dtype=torch.float
         )
         ind1 = (self.m == 0)
         
@@ -356,17 +356,17 @@ class Grid:
 
         # we create our tensors to storage the results
 
-        self.X0 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
-        self.X1 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
-        self.X2 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
-        self.P_MC = torch.zeros(self.N, self.N, self.K, dtype=torch.float64)
+        self.X0 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float)
+        self.X1 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float)
+        self.X2 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float)
+        self.P_MC = torch.zeros(self.N, self.N, self.K, dtype=torch.float)
         self.df_MC = pd.DataFrame(
             np.zeros((self.K+1, 3), dtype='float64'),
             columns=['Susceptible', 'Infected', 'Dead']
         )
 
-        self.submatrix()
-        self.enlargement_process()
+        #self.submatrix()
+        #self.enlargement_process()
 
         # we have to note that self.A and self.large_matrices are already computed.
         # we only need to compute the neighbourhood relation and update the state
@@ -384,7 +384,7 @@ class Grid:
         
         # when rho <= part[0]
 
-        self.large_matrices[2:5, 2:5, ind1] = self.p0[ind1]
+        self.large_matrices[2:5, 2:5, ind1] = self.p0[ind1].float()
         self.large_matrices[3, 3, ind1] = 0
 
         # when part[0] < rho <= part[1]
