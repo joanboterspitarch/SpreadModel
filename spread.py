@@ -46,7 +46,7 @@ class ArchNN(torch.nn.Module):
 
 class Grid:
 
-    def __init__(self, N):
+    def __init__(self, N, mode='bernoulli'):
 
         if N%2 == 0:
             N += 1
@@ -66,8 +66,9 @@ class Grid:
         self.susceptible = self.N**2 - 1
         self.infected = 1
         self.dead = 0
+        self.mode = mode
     
-    def __param__(self, inc=1, part=[0.1, 0.5, 0.9], p0=0.25, div=2):
+    def set_param(self, inc=1, part=[0.1, 0.5, 0.9], p0=0.25, div=2):
 
         self.inc = inc # delay steps between infected and dead cells.
         self.partition = part # partition of the rho axis (3 values). 
@@ -83,8 +84,7 @@ class Grid:
         self.K = df.shape[0]
         self.Theta = torch.from_numpy(df.Theta.values)
         self.Rho = torch.from_numpy(df.Rho.values)
-        self.Temp = torch.from_numpy(df.Temperature.values)
-        self.Hum = torch.from_numpy(df.Humidity.values)
+
         self.Q = (self.Theta/(torch.pi/2) + 1).type(torch.int8)
         self.Xi = torch.where(
             torch.logical_or(self.Q == 1, self.Q == 3),
@@ -107,6 +107,18 @@ class Grid:
         ).type(torch.int8)
 
         # create dataframe with all the data
+        try:
+            self.Temp = torch.from_numpy(df.Temperature.values)
+            self.Hum = torch.from_numpy(df.Humidity.values)
+            self.df_other = pd.DataFrame(
+                {
+                    'Temperature': self.Temp,
+                    'Humidity': self.Hum
+                }
+            )
+        except:
+            pass
+        
 
         self.df_wind = pd.DataFrame(
             {
@@ -118,12 +130,7 @@ class Grid:
             }
         )
 
-        self.df_other = pd.DataFrame(
-            {
-                'Temperature': self.Temp,
-                'Humidity': self.Hum
-            }
-        )
+        
 
         # create dataframe empty with shape (self.K, 3)
         
@@ -252,11 +259,14 @@ class Grid:
         to_inf_cells = torch.logical_and(self.neigh_prob < 1, self.neigh_prob > 0)
         ind_to_inf_cells = torch.logical_and(to_inf_cells, health_cells)
 
-        probs = torch.stack(
-            (self.neigh_prob[ind_to_inf_cells], 1 - self.neigh_prob[ind_to_inf_cells]),
-            dim=1
-        ).log()
-        self.state[ind_to_inf_cells] = F.gumbel_softmax(logits=probs, tau=tau, hard=True)[:, 0].to(dtype=torch.float64)
+        if self.mode == 'bernoulli':
+            self.state[ind_to_inf_cells] = torch.distributions.Bernoulli(self.neigh_prob[ind_to_inf_cells]).sample().to(dtype=torch.float64)    
+        elif self.mode == 'gumbel':
+            probs = torch.stack(
+                (self.neigh_prob[ind_to_inf_cells], 1 - self.neigh_prob[ind_to_inf_cells]),
+                dim=1
+            ).log()
+            self.state[ind_to_inf_cells] = F.gumbel_softmax(logits=probs, tau=tau, hard=True)[:, 0].to(dtype=torch.float64)
 
         self.cont[self.state==1] += 1
         aux = torch.where(self.state==1)
@@ -448,64 +458,5 @@ class Grid:
             k = 2
         )
     
-    def AI_MonteCarlo(self, n_epochs=10, n_it=10**3, tau=1, M=100, k=0.001, target1=None, target2=None, target3=None):
-
-        self.model = ArchNN(M=M, k=k)
-
-        log_each = 2
-        l = []
-        crit = torch.nn.MSELoss()
-        opt = torch.optim.SGD(self.model.parameters(), lr=0.1)
-        self.submatrix()
-        #self.model.train()
-
-        for epoch in range(n_epochs):
-
-            print('Number of epoch: ', epoch)
-
-            self.p0, self.div = self.model(torch.stack(
-                (self.Temp, self.Hum),
-                dim=1
-            ).float())
-
-            self.p0 = self.p0.flatten().to(torch.float64)
-            self.div = self.div.flatten().to(torch.float64)
-
-            print(self.p0, self.div)
-
-            self.X0 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
-            self.X1 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
-            self.X2 = torch.zeros(self.N, self.N, self.K+1, dtype=torch.float64)
-            self.P_MC = torch.zeros(self.N, self.N, self.K, dtype=torch.float64)
-            self.df_MC = pd.DataFrame(
-                np.zeros((self.K+1, 3), dtype='float64'),
-                columns=['Susceptible', 'Infected', 'Dead']
-            )
-
-            
-            self.enlargement_process_AI()
-
-            self.Task_MonteCarlo(n_it=n_it, tau=tau)
-
-            self.l1 = crit(self.X0[:, :, -1], target1)
-            self.l2 = crit(self.X1[:, :, -1], target2)
-            self.l3 = crit(self.X2[:, :, -1], target3)
-
-            self.l = (self.l1 + self.l2)
-
-            l.append(self.l1.item())
-
-            opt.zero_grad()
-
-            self.l1.backward()
-
-            opt.step()
-
-            if not epoch % log_each:
-
-                #lr = lr0 + (0.001-lr0)*(epoch/n_epochs)
-                print(f'Loss:  {np.mean(l):.5f}')
-                #opt = torch.optim.Adam(self.model.parameters(), lr=lr)
-
 
 
