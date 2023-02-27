@@ -383,6 +383,11 @@ class Grid:
         # for every single random seed
 
         self.Task_MonteCarlo(n_it=n_it, tau=tau)
+        
+        _, self.X = torch.max(
+            torch.stack((self.X0, self.X1, self.X2), dim=-1),
+            dim=-1
+        )
     
     def enlargement_process_AI(self):
 
